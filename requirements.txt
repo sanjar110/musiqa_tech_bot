@@ -1,0 +1,7 @@
+aiogram
+yt-dlp
+shazamio
+pandas
+openpyxl
+python-dotenv
+aiohttp
