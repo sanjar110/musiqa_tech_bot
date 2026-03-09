@@ -181,12 +181,21 @@ async def export_excel(call: types.CallbackQuery):
 
 # --- BOTNI ISHGA TUSHIRISH ---
 async def main():
+    # Eski xabarlarni o'chirib yuborish
     await bot.delete_webhook(drop_pending_updates=True)
+    
+    # Terminalda va Railway loglarida chiqadigan yozuv
     print("-" * 30)
-    print("TECHPRO: Bot muvaffaqiyatli ishga tushdi! ✅")
-    print(f"Boshlangan vaqt: {datetime.now().strftime('%H:%M:%S')}")
+    print("Bot muvaffaqiyatli ishga tushdi! ✅")
+    print(f"Vaqt: {datetime.now().strftime('%H:%M:%S')}")
+    print("Dasturchi: TECHPRO")
     print("-" * 30)
+    
+    # Botni ishga tushirish (Polling)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        print("\nBot to'xtatildi! ❌")
