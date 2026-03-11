@@ -1,7 +1,6 @@
-aiogram
-yt-dlp
-shazamio
-pandas
-openpyxl
-python-dotenv
-aiohttp
+aiogram==3.4.1
+yt-dlp==2024.3.10
+shazamio==0.5.1
+pandas==2.2.1
+openpyxl==3.1.2
+python-dotenv==1.0.1
