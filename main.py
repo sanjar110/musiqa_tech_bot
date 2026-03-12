@@ -1,6 +1,8 @@
 import os
 import asyncio
 import logging
+import re
+import time
 import pandas as pd
 from datetime import datetime
 from dotenv import load_dotenv
@@ -14,139 +16,83 @@ from shazamio import Shazam
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
+# O'zgaruvchilarni olish va himoyalash
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
 CHANNEL_ID = os.getenv("CHANNEL_ID")
+try:
+    # Railway Variables'da ADMIN_ID bo'sh bo'lsa xato bermasligi uchun default 0
+    ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
+except (ValueError, TypeError):
+    ADMIN_ID = 0
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 shazam = Shazam()
 
-# Bot brendingi
 BOT_USERNAME = "@tech_musiqa_bot"
-CAPTION_TEXT = f"🎶 {BOT_USERNAME} orqali yuklandi. Eng sara musiqalar bizda! ✅\n💻 Dasturchi: TECHPRO"
+CAPTION_TEXT = f"🎶 {BOT_USERNAME} orqali yuklandi. ✅\n💻 Dasturchi: TECHPRO"
 
-if not os.path.exists("downloads"):
-    os.makedirs("downloads")
+# Yuklamalar uchun papka (To'liq yo'l bilan)
+DOWNLOAD_PATH = os.path.join(os.getcwd(), "downloads")
+if not os.path.exists(DOWNLOAD_PATH):
+    os.makedirs(DOWNLOAD_PATH)
 
-users_db = [] # Vaqtinchalik baza (Idealda SQLite yoki PostgreSQL ishlatish tavsiya etiladi)
+# Foydalanuvchilar bazasi
+users_db = []
 
-# --- YORDAMCHI FUNKSIYALAR ---
+# --- 2. YORDAMCHI FUNKSIYALAR ---
+def clean_filename(title):
+    """Fayl nomidagi taqiqlangan belgilarni tozalash"""
+    return re.sub(r'[\\/*?:"<>|]', "", title).strip()
+
 async def check_sub(user_id):
+    """Kanalga obunani tekshirish (Agar CHANNEL_ID bo'lmasa True qaytaradi)"""
+    if not CHANNEL_ID:
+        return True
     try:
         chat_member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
         return chat_member.status in ['member', 'administrator', 'creator']
-    except Exception as e:
-        logging.error(f"Kanalni tekshirishda xatolik: {e}")
+    except Exception:
         return False
 
-def clean_filename(title):
-    keepcharacters = (' ', '.', '_')
-    return "".join(c for c in title if c.isalnum() or c in keepcharacters).rstrip()
-
-# --- ASOSIY HANDLERLAR ---
-@dp.message(Command("start"))
-async def start_handler(message: types.Message):
-    user_id = message.from_user.id
-    first_name = message.from_user.first_name or ""
-    last_name = message.from_user.last_name or ""
-    username = f"@{message.from_user.username}" if message.from_user.username else "Yo'q"
-    
-    if not any(u['ID'] == user_id for u in users_db):
-        users_db.append({
-            "T/r": len(users_db) + 1, 
-            "ID": user_id, 
-            "Ism": first_name,
-            "Familiya": last_name,
-            "Username": username,
-            "Qo'shilgan sana": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        })
-
-    if await check_sub(user_id):
-        await message.answer(f"Xush kelibsiz, {first_name}! 😊\nQo'shiq nomi, YouTube yoki Instagram havolasini yuboring! ✨")
-    else:
-        btn = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Obuna bo'lish 📢", url=f"https://t.me/{CHANNEL_ID[1:]}")],
-            [InlineKeyboardButton(text="Tasdiqlash ✅", callback_data="check_sub")]
-        ])
-        await message.answer(f"Assalomu alaykum, {first_name}! ✨\nBotdan foydalanish uchun kanalga obuna bo'ling:", reply_markup=btn)
-
-@dp.callback_query(F.data == "check_sub")
-async def check_sub_callback(call: types.CallbackQuery):
-    if await check_sub(call.from_user.id):
-        await call.message.delete()
-        await call.message.answer("Obuna tasdiqlandi! ✅\nEndi bemalol izlash va yuklash imkoniyatidan foydalanishingiz mumkin. ✨")
-    else:
-        await call.answer("Siz hali obuna bo'lmagansiz! ❌", show_alert=True)
-
-@dp.message(F.text)
-async def search_handler(message: types.Message):
-    if message.text.startswith("/"): return
-    name = message.from_user.first_name or "Do'stim"
-    
-    if not await check_sub(message.from_user.id):
-        return await message.answer(f"Kechirasiz {name}, avval kanalga obuna bo'ling! ☺️")
-
-    query = message.text.strip()
-    sent_msg = await message.answer("Biroz kuting, ma'lumot olinmoqda... ⌛️")
-    
-    # 1. HAVOLA YUBORILGANDA
-    if query.startswith("http"):
-        try:
-            with YoutubeDL({'quiet': True}) as ydl:
-                info = ydl.extract_info(query, download=False)
-                
-                # Agar havola Instagram rasmi bo'lsa (video bo'lmasa)
-                if info.get('ext') in ['jpg', 'jpeg', 'png', 'webp'] or not info.get('is_video', True):
-                    await sent_msg.edit_text("🖼 Rasm yuklanmoqda...")
-                    filepath = f"downloads/image_{message.message_id}.jpg"
-                    ydl_opts = {'outtmpl': filepath, 'quiet': True}
-                    with YoutubeDL(ydl_opts) as img_ydl:
-                        img_ydl.download([query])
-                    await message.answer_photo(FSInputFile(filepath), caption=CAPTION_TEXT)
-                    os.remove(filepath)
-                    await sent_msg.delete()
-                    return
-
-                # Agar havola video bo'lsa (YouTube/Instagram)
-                kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="📥 Videoni yuklash", callback_data=f"dl_vid|{query}")],
-                    [InlineKeyboardButton(text="🎵 Audioni ajratish (MP3)", callback_data=f"dl_aud|{query}")],
-                    [InlineKeyboardButton(text="🔍 Qo'shiqni topish (Shazam)", callback_data=f"shazam|{query}")]
-                ])
-                title = info.get('title', 'Video')
-                await sent_msg.edit_text(f"✅ Havola aniqlandi!\n\n📌 **{title}**\n\nNima amal bajaramiz? 👇", reply_markup=kb)
-        except Exception as e:
-            logging.error(e)
-            await sent_msg.edit_text("Uzr, havolani o'qishda xatolik yuz berdi. Bu yopiq profil yoki noto'g'ri havola bo'lishi mumkin. 😔")
+def progress_hook(d, message, last_update_time):
+    """Yuklash foizini ko'rsatuvchi hook"""
+    if d['status'] == 'downloading':
+        p = d.get('_percent_str', '0%')
+        speed = d.get('_speed_str', '0KB/s')
+        eta = d.get('_eta_str', '00:00')
+        total = d.get('_total_bytes_str', d.get('_total_bytes_estimate_str', 'Noma\'lum'))
+        
+        current_time = time.time()
+        # Har 2 soniyada yangilash (Telegram Flood limitdan himoya)
+        if current_time - last_update_time[0] > 2.0:
+            text = (f"🚀 **Yuklanmoqda:** {p}\n"
+                    f"📦 **Hajmi:** {total}\n"
+                    f"⚡ **Tezlik:** {speed}\n"
+                    f"⏳ **Qolgan vaqt:** {eta}")
             
-    # 2. MATN ORQALI QIDIRUV (Qo'shiq / Artist)
-    else:
-        try:
-            ydl_opts = {'quiet': True, 'noplaylist': True, 'extract_flat': True}
-            with YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(f"ytsearch10:{query}", download=False)
-                results = info.get('entries', [])
-                if not results: return await sent_msg.edit_text("Hech narsa topilmadi. 😔")
-                
-                kb_list = [[InlineKeyboardButton(text=f"🎵 {res['title'][:35]}...", callback_data=f"dl_aud|{res['url']}")] for res in results]
-                await sent_msg.edit_text(f"🌟 '{query}' bo'yicha natijalar:\n(Yuklash uchun ustiga bosing) 👇", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_list))
-        except Exception as e:
-            logging.error(e)
-            await sent_msg.edit_text("Qidiruv tizimida xatolik yuz berdi... ✨")
+            loop = asyncio.get_event_loop()
+            loop.create_task(message.edit_text(text, parse_mode="Markdown"))
+            last_update_time[0] = current_time
+    
+    elif d['status'] == 'finished':
+        loop = asyncio.get_event_loop()
+        loop.create_task(message.edit_text("✅ Yuklash yakunlandi! Fayl qayta ishlanmoqda..."))
 
-# --- MEDIANI YUKLASH (Audio/Video) ---
-@dp.callback_query(F.data.startswith("dl_"))
-async def download_callback(call: types.CallbackQuery):
-    action, url = call.data.split("|", 1)
-    file_type = "MP3" if action == "dl_aud" else "Klip"
-    msg = await call.message.edit_text(f"🚀 {file_type} tayyorlanmoqda, kuting... ⌛️")
-
+# --- 3. YUKLASH MARKAZI ---
+async def universal_downloader(call, action, url):
+    sent_msg = await call.message.edit_text("📥 Yuklashga tayyorlanmoqda, kuting... ⌛️")
+    last_update = [time.time()]
+    
     try:
+        ext = "mp3" if action == "dl_aud" else "mp4"
         ydl_opts = {
             'format': 'bestaudio/best' if action == "dl_aud" else 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-            'outtmpl': f'downloads/%(title)s.%(ext)s',
+            'outtmpl': f'{DOWNLOAD_PATH}/%(title)s.%(ext)s',
             'quiet': True,
+            'no_warnings': True,
+            'progress_hooks': [lambda d: progress_hook(d, sent_msg, last_update)],
+            'prefer_ffmpeg': True,
         }
         
         if action == "dl_aud":
@@ -157,150 +103,154 @@ async def download_callback(call: types.CallbackQuery):
             }]
 
         with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            original_title = info.get('title', 'Audio')
-            clean_title = clean_filename(original_title)
+            loop = asyncio.get_event_loop()
+            info = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=True))
+            title = clean_filename(info.get('title', 'media_file'))
             
-            # Fayl nomini to'g'rilash
+            old_path = ydl.prepare_filename(info)
             if action == "dl_aud":
-                path = ydl.prepare_filename(info).rsplit(".", 1)[0] + ".mp3"
-            else:
-                path = ydl.prepare_filename(info)
-
-            new_path = f"downloads/{clean_title}.{'mp3' if action == 'dl_aud' else 'mp4'}"
-            if os.path.exists(path) and path != new_path:
-                os.rename(path, new_path)
-            else:
-                new_path = path
+                old_path = old_path.rsplit(".", 1)[0] + ".mp3"
+            
+            new_path = os.path.join(DOWNLOAD_PATH, f"{title}.{ext}")
+            if os.path.exists(old_path):
+                os.rename(old_path, new_path)
 
         file = FSInputFile(new_path)
-        
         if action == "dl_aud":
-            # MP3 tagida rasmiy klipni yuklash tugmasi
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📹 Klipni ham yuklaysizmi?", callback_data=f"get_clip|{original_title}")]
+                [InlineKeyboardButton(text="📹 Klipni yuklash", callback_data=f"get_clip|{title}")]
             ])
             await call.message.answer_audio(file, caption=CAPTION_TEXT, reply_markup=kb)
         else:
             await call.message.answer_video(file, caption=CAPTION_TEXT)
         
-        await msg.delete()
-        if os.path.exists(new_path): os.remove(new_path)
-
-    except Exception as e:
-        logging.error(e)
-        await msg.edit_text("Kechirasiz, mediani yuklashda serverda xato bo'ldi. 😔")
-
-# --- SHAZAM (Videodan qo'shiqni topish) ---
-@dp.callback_query(F.data.startswith("shazam|"))
-async def shazam_callback(call: types.CallbackQuery):
-    url = call.data.split("|", 1)[1]
-    msg = await call.message.edit_text("🔍 Audiodan qo'shiq aslini qidiryapman, biroz kuting... 🎧")
-    
-    temp_audio = f"downloads/temp_{call.from_user.id}.mp3"
-    try:
-        # Videodan kichik qismini audiosini olish
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': temp_audio,
-            'quiet': True,
-            'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}],
-        }
-        with YoutubeDL(ydl_opts) as ydl:
-            ydl.extract_info(url, download=True)
+        await sent_msg.delete()
+        if os.path.exists(new_path):
+            os.remove(new_path)
         
-        # Shazam orqali tekshirish
-        out = await shazam.recognize(temp_audio)
-        if 'track' in out:
-            track_title = out['track']['title']
-            track_subtitle = out['track']['subtitle']
-            full_name = f"{track_subtitle} - {track_title}"
-            
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📥 Aslini MP3 qilib yuklash", callback_data=f"dl_shazam_aud|{full_name}")]
-            ])
-            await msg.edit_text(f"🎉 Topildi!\n\n🎤 Ijrochi: {track_subtitle}\n🎵 Qo'shiq: {track_title}", reply_markup=kb)
-        else:
-            await msg.edit_text("Kechirasiz, ushbu videodagi qo'shiq bazadan topilmadi. 🤷‍♂️")
-            
-        if os.path.exists(temp_audio): os.remove(temp_audio)
-            
     except Exception as e:
-        logging.error(e)
-        await msg.edit_text("Xatolik yuz berdi. Boshqa havola sinab ko'ring.")
-        if os.path.exists(temp_audio): os.remove(temp_audio)
+        logging.error(f"Download Error: {e}")
+        await sent_msg.edit_text("❌ Xatolik: Fayl juda katta yoki serverda FFmpeg o'rnatilmagan.")
 
-@dp.callback_query(F.data.startswith("dl_shazam_aud|"))
-async def dl_shazam_aud(call: types.CallbackQuery):
-    query = call.data.split("|", 1)[1]
-    await call.message.edit_text(f"🔍 '{query}' aslini qidiryapman...")
-    
-    try:
-        with YoutubeDL({'quiet': True, 'noplaylist': True, 'extract_flat': True}) as ydl:
-            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
-            if not info.get('entries'): return await call.message.edit_text("Asli topilmadi.")
-            vid_url = info['entries'][0]['url']
-            
-        # Tap-tayyor download funksiyasiga yuboramiz
-        call.data = f"dl_aud|{vid_url}"
-        await download_callback(call)
-    except:
-        await call.message.edit_text("Qo'shiqni yuklab bo'lmadi.")
+# --- 4. HANDLERLAR ---
+@dp.message(Command("start"))
+async def start_handler(message: types.Message):
+    user_id = message.from_user.id
+    if not any(u['ID'] == user_id for u in users_db):
+        users_db.append({
+            "T/r": len(users_db) + 1,
+            "ID": user_id,
+            "Ism": message.from_user.first_name or "User",
+            "Sana": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
 
-# --- RASMIY KLIPNI YUKLASH ---
+    if await check_sub(user_id):
+        await message.answer(f"Xush kelibsiz! 😊\nQo'shiq nomi yoki havolani yuboring.")
+    else:
+        btn = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Obuna bo'lish 📢", url=f"https://t.me/{CHANNEL_ID[1:]}")],
+            [InlineKeyboardButton(text="Tasdiqlash ✅", callback_data="check_sub")]
+        ])
+        await message.answer("Botdan foydalanish uchun kanalimizga obuna bo'ling:", reply_markup=btn)
+
+@dp.callback_query(F.data == "check_sub")
+async def sub_callback(call: types.CallbackQuery):
+    if await check_sub(call.from_user.id):
+        await call.message.delete()
+        await call.message.answer("Tasdiqlandi! ✅ Marhamat, foydalanishingiz mumkin.")
+    else:
+        await call.answer("Siz hali obuna bo'lmagansiz! ❌", show_alert=True)
+
+@dp.message(F.text)
+async def handle_text(message: types.Message):
+    if message.text.startswith("/") or not await check_sub(message.from_user.id):
+        return
+
+    query = message.text.strip()
+    sent_msg = await message.answer("🔍 Qidirilmoqda... kuting.")
+
+    if query.startswith("http"):
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📹 Video", callback_data=f"dl_vid|{query}"),
+             InlineKeyboardButton(text="🎵 MP3", callback_data=f"dl_aud|{query}")],
+            [InlineKeyboardButton(text="🔍 Shazam", callback_data=f"shazam|{query}")]
+        ])
+        await sent_msg.edit_text(f"🎬 Media aniqlandi!\nNima yuklaymiz?", reply_markup=kb)
+    else:
+        try:
+            with YoutubeDL({'quiet': True, 'extract_flat': True}) as ydl:
+                info = ydl.extract_info(f"ytsearch7:{query}", download=False)
+                res = info.get('entries', [])
+                if not res: return await sent_msg.edit_text("Topilmadi. 😔")
+                
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text=f"🎵 {r['title'][:40]}", callback_data=f"dl_aud|{r['url']}")] for r in res
+                ])
+                await sent_msg.edit_text(f"🔍 '{query}' bo'yicha natijalar:", reply_markup=kb)
+        except Exception:
+            await sent_msg.edit_text("Qidiruvda xato bo'ldi. 😔")
+
+@dp.callback_query(F.data.startswith("dl_"))
+async def direct_dl(call: types.CallbackQuery):
+    action, url = call.data.split("|", 1)
+    await universal_downloader(call, action, url)
+
 @dp.callback_query(F.data.startswith("get_clip|"))
-async def get_clip_callback(call: types.CallbackQuery):
-    song_title = call.data.split("|", 1)[1]
-    search_query = f"{song_title} official music video"
-    msg = await call.message.edit_text(f"🎬 '{song_title}' klipi qidirilmoqda... ⌛️")
+async def clip_dl(call: types.CallbackQuery):
+    title = call.data.split("|", 1)[1]
+    with YoutubeDL({'quiet': True, 'extract_flat': True}) as ydl:
+        info = ydl.extract_info(f"ytsearch1:{title} official video", download=False)
+        if info['entries']:
+            await universal_downloader(call, "dl_vid", info['entries'][0]['url'])
+        else:
+            await call.answer("Klip topilmadi. 😔", show_alert=True)
+
+@dp.callback_query(F.data.startswith("shazam|"))
+async def shazam_dl(call: types.CallbackQuery):
+    url = call.data.split("|", 1)[1]
+    msg = await call.message.edit_text("🔍 Qo'shiqni tahlil qilyapman... 🎧")
+    temp = os.path.join(DOWNLOAD_PATH, f"shazam_{call.from_user.id}.mp3")
     
     try:
-        with YoutubeDL({'quiet': True, 'noplaylist': True, 'extract_flat': True}) as ydl:
-            info = ydl.extract_info(f"ytsearch1:{search_query}", download=False)
-            if not info.get('entries'): return await msg.edit_text("Kechirasiz, ushbu qo'shiqning rasmiy klipi topilmadi. 😔")
-            vid_url = info['entries'][0]['url']
-            
-        call.data = f"dl_vid|{vid_url}"
-        await msg.delete()
-        await download_callback(call)
-    except Exception as e:
-        logging.error(e)
-        await msg.edit_text("Klipni yuklashda texnik xato yuz berdi. 😔")
+        with YoutubeDL({'format': 'bestaudio', 'outtmpl': temp, 'quiet': True, 'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}]}) as ydl:
+            ydl.download([url])
+        
+        out = await shazam.recognize(temp)
+        if 'track' in out:
+            t, a = out['track']['title'], out['track']['subtitle']
+            with YoutubeDL({'quiet': True, 'extract_flat': True}) as ydl:
+                sh_res = ydl.extract_info(f"ytsearch1:{a} {t}", download=False)
+                if sh_res['entries']:
+                    await universal_downloader(call, "dl_aud", sh_res['entries'][0]['url'])
+        else:
+            await msg.edit_text("Asli topilmadi. 🤷‍♂️")
+    finally:
+        if os.path.exists(temp): os.remove(temp)
 
-# --- ADMIN PANEL ---
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
     if message.from_user.id == ADMIN_ID:
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📥 Excel formatda yuklash", callback_data="get_excel")]
+            [InlineKeyboardButton(text="📥 Excel yuklash", callback_data="get_excel")]
         ])
-        await message.answer(f"📊 **Statistika**\n\nJami foydalanuvchilar: {len(users_db)} ta", reply_markup=kb, parse_mode="Markdown")
+        await message.answer(f"📊 **Statistika**\n\nFoydalanuvchilar: {len(users_db)}", reply_markup=kb, parse_mode="Markdown")
 
 @dp.callback_query(F.data == "get_excel")
-async def export_excel(call: types.CallbackQuery):
-    if not users_db:
-        return await call.answer("Baza hozircha bo'sh!", show_alert=True)
-        
+async def excel_export(call: types.CallbackQuery):
+    if not users_db: return await call.answer("Baza bo'sh!")
     df = pd.DataFrame(users_db)
-    file_path = "users_stat.xlsx"
-    df.to_excel(file_path, index=False)
-    await call.message.answer_document(FSInputFile(file_path), caption="📊 Barcha foydalanuvchilar ro'yxati")
-    os.remove(file_path)
+    path = "users.xlsx"
+    df.to_excel(path, index=False)
+    await call.message.answer_document(FSInputFile(path), caption="Foydalanuvchilar ro'yxati")
+    os.remove(path)
 
-# --- BOTNI ISHGA TUSHIRISH ---
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
-    
-    print("-" * 40)
-    print(f"{BOT_USERNAME} muvaffaqiyatli ishga tushdi! ✅")
-    print(f"Vaqt: {datetime.now().strftime('%H:%M:%S')}")
-    print("Dasturchi: TECHPRO")
-    print("-" * 40)
-    
+    print("Bot TECHPRO tomonidan ishga tushirildi! ✅")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        print("\nBot to'xtatildi! ❌")
+    except Exception:
+        print("Bot to'xtadi.")
