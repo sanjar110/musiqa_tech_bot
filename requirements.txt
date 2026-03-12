@@ -1,7 +1,7 @@
-aiogram==3.4.1
+aiogram
 yt-dlp
-shazamio==0.4.0
+shazamio
 pandas
 openpyxl
 python-dotenv
-aiohttp
+aiofiles
